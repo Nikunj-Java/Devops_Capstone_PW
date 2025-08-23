@@ -14,6 +14,10 @@ provider "aws" {
   region = var.aws_region
 }
 
+# -----------------------------
+# IAM roles for Lambda
+# -----------------------------
+
 resource "aws_iam_role" "lambda_exec_role" {
   name = "lambda_exec_role"
 
@@ -41,10 +45,18 @@ resource "aws_iam_role_policy_attachment" "s3_access" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
 }
 
+# -----------------------------
+# Upload Bucket
+# -----------------------------
+
 resource "aws_s3_bucket" "upload_bucket" {
   bucket        = var.upload_bucket_name
   force_destroy = true
 }
+
+# -----------------------------
+# Lambda: Process Uploaded File
+# -----------------------------
 
 resource "aws_lambda_function" "process_uploaded_file" {
   function_name = "process-uploaded-file"
@@ -81,6 +93,10 @@ resource "aws_lambda_permission" "allow_s3" {
   source_arn    = aws_s3_bucket.upload_bucket.arn
 }
 
+# -----------------------------
+# Frontend Hosting (S3 + CloudFront)
+# -----------------------------
+
 resource "aws_s3_bucket" "frontend_bucket" {
   bucket        = var.frontend_bucket_name
   force_destroy = true
@@ -90,6 +106,7 @@ resource "aws_s3_bucket" "frontend_bucket" {
   }
 }
 
+# Disable Block Public Access so bucket policy works
 resource "aws_s3_bucket_public_access_block" "frontend_bucket_public_access" {
   bucket = aws_s3_bucket.frontend_bucket.id
 
@@ -99,18 +116,7 @@ resource "aws_s3_bucket_public_access_block" "frontend_bucket_public_access" {
   restrict_public_buckets = false
 }
 
-resource "aws_s3_bucket_cors_configuration" "frontend_cors" {
-  bucket = aws_s3_bucket.frontend_bucket.id
-
-  cors_rule {
-    allowed_headers = ["*"]
-    allowed_methods = ["GET", "PUT", "HEAD"]
-    allowed_origins = ["https://${aws_cloudfront_distribution.frontend_distribution.domain_name}"]
-    expose_headers  = []
-    max_age_seconds = 3000
-  }
-}
-
+# Static website hosting
 resource "aws_s3_bucket_website_configuration" "frontend_bucket_website" {
   bucket = aws_s3_bucket.frontend_bucket.id
 
@@ -123,6 +129,7 @@ resource "aws_s3_bucket_website_configuration" "frontend_bucket_website" {
   }
 }
 
+# Public bucket policy (depends on disabling Block Public Access first)
 resource "aws_s3_bucket_policy" "frontend_bucket_policy" {
   bucket = aws_s3_bucket.frontend_bucket.id
 
@@ -138,8 +145,24 @@ resource "aws_s3_bucket_policy" "frontend_bucket_policy" {
       }
     ]
   })
+
+  depends_on = [aws_s3_bucket_public_access_block.frontend_bucket_public_access]
 }
 
+# CORS (optional, for presigned uploads / APIs)
+resource "aws_s3_bucket_cors_configuration" "frontend_cors" {
+  bucket = aws_s3_bucket.frontend_bucket.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "HEAD"]
+    allowed_origins = ["https://${aws_cloudfront_distribution.frontend_distribution.domain_name}"]
+    expose_headers  = []
+    max_age_seconds = 3000
+  }
+}
+
+# CloudFront Distribution
 resource "aws_cloudfront_distribution" "frontend_distribution" {
   enabled             = true
   default_root_object = "index.html"
@@ -188,6 +211,10 @@ resource "aws_cloudfront_distribution" "frontend_distribution" {
 
   depends_on = [aws_s3_bucket_policy.frontend_bucket_policy]
 }
+
+# -----------------------------
+# Lambda: Presigned URL API
+# -----------------------------
 
 resource "aws_iam_role" "presign_lambda_role" {
   name = "DevOps-Accelerator-Presign-Lambda-Role"
@@ -307,6 +334,10 @@ resource "aws_lambda_permission" "allow_apigw_invoke_presign" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.presign_api.execution_arn}/*/*"
 }
+
+# -----------------------------
+# SNS Topic for Notifications
+# -----------------------------
 
 resource "aws_sns_topic" "devops_accelerator_upload_notify" {
   name = "devops-accelerator-upload-notification-topic"
